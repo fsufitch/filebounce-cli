@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	humanize "github.com/dustin/go-humanize"
+	"github.com/cheggaaa/pb"
 	"github.com/fsufitch/filebounce-cli/api"
 )
 
@@ -27,7 +27,7 @@ func getPath() (string, error) {
 	return path, nil
 }
 
-func waitToUpload(delay int, cb func()) {
+func waitToUpload(delay int) {
 	if delay < 1 {
 		reader := bufio.NewReader(os.Stdin)
 		fmt.Println("Hit Enter to start upload. ")
@@ -35,7 +35,6 @@ func waitToUpload(delay int, cb func()) {
 	} else {
 		time.Sleep(time.Duration(delay) * time.Second)
 	}
-	cb()
 }
 
 func main() {
@@ -61,51 +60,48 @@ func main() {
 	fmt.Printf("Using auth: %s\n", *auth)
 	fmt.Printf("Uploading file: %s\n", path)
 
-	conn, doneChan := api.ConnectTransferNode(url, *auth)
+	conn := api.ConnectTransferNode(url, *auth)
 
-	if conn.Error != nil {
-		fmt.Printf("Error connecting! %s\n", conn.Error)
-		return
-	}
+	go func(errChan chan error) {
+		err := <-errChan
+		fmt.Fprintf(os.Stderr, "Fatal error: %s\n", err.Error())
+		os.Exit(1)
+	}(conn.ReceivedError)
 
 	conn.Authenticate()
-
-	if conn.Error != nil {
-		fmt.Fprintf(os.Stderr, "Error authenticating! %s\n", conn.Error)
-	} else {
-		fmt.Println("Connection successful!")
-	}
-
-	conn.ReceivedFileIDCallback = func(fileID string) {
-		fmt.Printf("Download file at: http://%s/download/%s\n", *host, fileID)
-		waitToUpload(*delay, func() {
-			fmt.Printf("Uploading...")
-			err = conn.UploadFile(path)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error streaming file: %s\n", err)
-			}
-		})
-	}
-
-	stat, _ := os.Stat(path)
-	lastProgressPercent := uint64(0)
-	conn.ProgressCallback = func(bytes uint64) {
-		progressPercent := float64(bytes) / float64(stat.Size()) * 100
-		progressPercentInt := uint64(progressPercent)
-		if progressPercentInt-lastProgressPercent >= 10 {
-			lastProgressPercent = progressPercentInt
-			fmt.Printf(" ... Progress %s / %s (%.2f%%)\n", humanize.Bytes(bytes), humanize.Bytes(uint64(stat.Size())), progressPercent)
-		}
-	}
+	fmt.Printf("Connected and authenticated with transfer node: %s\n", *host)
 
 	conn.SelectFile(path)
 
-	if conn.Error != nil {
-		fmt.Fprintf(os.Stderr, "Error sending file metadata! %s\n", conn.Error)
-	}
+	fileID := <-conn.ReceivedFileID
+	fmt.Printf("Download file at: http://%s/download/%s\n", *host, fileID)
 
-	wsErr := <-doneChan
-	if wsErr != nil {
-		fmt.Fprintf(os.Stderr, "Websocket closed with error %s\n", wsErr)
+	waitToUpload(*delay)
+	fmt.Printf("Uploading...")
+
+	go conn.UploadChunksOnRequest(path)
+
+	stat, _ := os.Stat(path)
+	progressBar := pb.New(int(stat.Size()))
+	progressBar.SetRefreshRate(500 * time.Millisecond)
+	progressBar.ShowPercent = true
+	progressBar.ShowBar = true
+	progressBar.ShowSpeed = true
+	progressBar.SetUnits(pb.U_BYTES)
+	progressBar.Start()
+
+	done := false
+	for !done {
+		select {
+		case progressBytes := <-conn.ReceivedProgressBytes:
+			progressBar.Set64(int64(progressBytes))
+		case <-conn.Done:
+			done = true
+			progressBar.FinishPrint("Upload complete!")
+		case <-conn.ReceivedError:
+			progressBar.FinishPrint("Upload failed!")
+			//fmt.Fprintf(os.Stderr, "Fatal error: %s\n", err.Error())
+			//os.Exit(1)
+		}
 	}
 }
