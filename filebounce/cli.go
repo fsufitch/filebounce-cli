@@ -27,13 +27,36 @@ func getPath() (string, error) {
 	return path, nil
 }
 
-func waitToUpload(delay int) {
-	if delay < 1 {
+func waitToUpload(conn *api.TransferNodeConnection, delay int, waitRecipients int) {
+	switch {
+	case delay > 0:
+		time.Sleep(time.Duration(delay) * time.Second)
+		fallthrough
+	case waitRecipients > 0:
+		gotRecipients := 0
+		fmt.Printf("Waiting for recipients (%d/%d)...\n", gotRecipients, waitRecipients)
+		for gotRecipients < waitRecipients {
+			newRecipients := <-conn.ReceivedRecipients
+			gotRecipients = len(newRecipients)
+			fmt.Printf("Got recipients (%d/%d): ", gotRecipients, waitRecipients)
+			for _, recipient := range newRecipients {
+				switch {
+				case recipient.Identity != "":
+					fmt.Printf("%s ", recipient.Identity)
+				case recipient.Ipv4 != "":
+					fmt.Printf("%s ", recipient.Ipv4)
+				case recipient.Ipv6 != "":
+					fmt.Printf("%s ", recipient.Ipv6)
+				default:
+					fmt.Print("(unknown) ")
+				}
+			}
+			fmt.Println()
+		}
+	default:
 		reader := bufio.NewReader(os.Stdin)
 		fmt.Println("Hit Enter to start upload. ")
 		_, _ = reader.ReadString('\n')
-	} else {
-		time.Sleep(time.Duration(delay) * time.Second)
 	}
 }
 
@@ -41,6 +64,7 @@ func main() {
 	auth := flag.String("auth", "XXX", "authentication key to send to transfer node")
 	host := flag.String("host", "localhost:8888", "host of transfer node")
 	delay := flag.Int("delay", 0, "delay before upload is triggered (0 = wait for user input)")
+	waitRecipients := flag.Int("recipients", 0, "number of recipients to wait for (0 = do not wait)")
 	help := flag.Bool("h", false, "help")
 	flag.Parse()
 
@@ -76,7 +100,7 @@ func main() {
 	fileID := <-conn.ReceivedFileID
 	fmt.Printf("Download file at: http://%s/download/%s\n", *host, fileID)
 
-	waitToUpload(*delay)
+	waitToUpload(conn, *delay, *waitRecipients)
 	fmt.Printf("Uploading...")
 
 	go conn.UploadChunksOnRequest(path)

@@ -25,6 +25,7 @@ type TransferNodeConnection struct {
 	ReceivedFileID        chan string
 	ReceivedProgressBytes chan uint64
 	ReceivedError         chan error
+	ReceivedRecipients    chan []*protobufs.RecipientsData_Recipient
 	Done                  chan bool
 	Error                 error
 }
@@ -46,6 +47,7 @@ func ConnectTransferNode(url string, auth string) *TransferNodeConnection {
 		ReceivedFileID:        make(chan string),
 		ReceivedProgressBytes: make(chan uint64),
 		ReceivedError:         make(chan error),
+		ReceivedRecipients:    make(chan []*protobufs.RecipientsData_Recipient),
 		Done:                  make(chan bool),
 	}
 	go newConn.readLoop()
@@ -108,6 +110,9 @@ func (conn *TransferNodeConnection) triageMessage(buf []byte) (err error) {
 	case protobufs.TransferNodeToClientMessage_AUTH_SUCCESS:
 		// Nothing to do here
 		break
+	case protobufs.TransferNodeToClientMessage_RECIPIENTS:
+		recipients := message.GetRecipientsData().GetRecipients()
+		conn.ReceivedRecipients <- recipients
 	case protobufs.TransferNodeToClientMessage_TRANSFER_CREATED:
 		conn.FileID = message.TransferCreatedData.GetTransferId()
 		conn.ReceivedFileID <- conn.FileID
